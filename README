@@ -1,0 +1,11 @@
+CMIP5_multi_model_regression_combine
+====================================
+
+This package provides scipy.stats based utilities to perform a
+multi-model mean of regressions. Based on Swart et al (2015) and Laliberte et al (2016).
+
+Frederic Laliberte, Stephen E. L. Howell, Paul J. Kushner
+Environment and Climate Change Canada, 2016
+
+The Natural Sciences and Engineering Research Council of Canada (NSERC/CRSNG) funded 
+FBL during this project.
