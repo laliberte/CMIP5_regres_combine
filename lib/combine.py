@@ -6,9 +6,10 @@ import random
 import multiprocessing
 from numba import jit
 import datetime
+import copy
 
 import scipy.stats as stats
-import matplotlib.pyplot as plt
+#import matplotlib.pyplot as plt
 
 def combine_trends(regression_struct_list,model_list,num_procs=1):
     """
@@ -27,11 +28,11 @@ def combine_trends(regression_struct_list,model_list,num_procs=1):
         pool=multiprocessing.Pool(num_procs)
         pool_map=pool.map
     try:
-        combined_regression_struct=np.concatenate(regression_struct_list,axis=0)
+        combined_regression_struct=np.concatenate(map(lambda x:x[np.newaxis,...], regression_struct_list),axis=0)
 
         axis_split=np.argmax(combined_regression_struct.shape[1:])+1
         return np.concatenate(pool_map( combine_trends_apply_vec,[ ( regression_struct, model_list) for 
-                                                        regression_struct in np.array_split(np.concatenate(regression_struct_list,axis=0), num_procs,axis=axis_split)]),
+                                                        regression_struct in np.array_split(combined_regression_struct, num_procs,axis=axis_split)]),
                                                         axis=axis_split)
     finally:
         if num_procs>1:
@@ -61,10 +62,12 @@ def combine_pearsoncorr(regression_struct_list,model_list,num_procs=1):
         pool=multiprocessing.Pool(num_procs)
         pool_map=pool.map
     try:
-        combined_regression_struct=np.concatenate(regression_struct_list,axis=0)
+        #combined_regression_struct=np.concatenate(regression_struct_list,axis=0)
+        combined_regression_struct=np.concatenate(map(lambda x:x[np.newaxis,...], regression_struct_list),axis=0)
+
         axis_split=np.argmax(combined_regression_struct.shape[1:])+1
         return np.concatenate(pool_map( combine_pearsoncorr_apply_vec,[ ( regression_struct, model_list) for 
-                                                        regression_struct in np.array_split(np.concatenate(regression_struct_list,axis=0), num_procs,axis=axis_split)]),
+                                                        regression_struct in np.array_split(combined_regression_struct, num_procs,axis=axis_split)]),
                                                         axis=axis_split)
     finally:
         if num_procs>1:
@@ -99,14 +102,20 @@ def combine_pearsoncorr_one_dim(regression_struct,model_list,sample_size=1000,sa
                 realization_ensemble.append(correlation_model)
             ensemble_list.append(np.concatenate(realization_ensemble,axis=1))
 
-    out_struct=np.zeros((1,),dtype=regression_struct.dtype)
+    out_dtype=[('r',np.float),('p-value',np.float),
+               ('bin_edge_left',np.float),('bin_edge_right',np.float),('hist',np.float)]
+    nbins = np.ceil((sample_size*sample_size_ensemble)**(1.0/3.0))
+    out_struct=np.zeros((nbins,),dtype=out_dtype)
+
     if len(ensemble_list)>0:
-        out_struct['r'], out_struct['p-value']=additive_noise_model(ensemble_list,sample_size_ensemble,sample_size)
-        #out_struct['r']=sum([ensemble.mean(-1).mean(-1) for ensemble in ensemble_list])/len(ensemble_list)
-        #invert Fishert trasform:
-        out_struct['r']=np.tanh(out_struct['r'])
+        #apply additive noise model:
+        out_tuple=additive_noise_model(ensemble_list,sample_size_ensemble,sample_size,plot=plot)
     else:
-        out_struct['r'], out_struct['p-value']=(0.0,1.0)
+        #If ensemble_list is empty (happens when all values are missing (e.g. over land). slope is 0.0, with no confidence. 
+        out_tuple=(0.0,1.0,np.full((n,),np.nan),np.full((n,),np.nan),np.full((n,),np.nan))
+
+    for name_id, name in enumerate(out_struct.dtype.names):
+        out_struct[name][:] = out_tuple[name_id]
     return out_struct
 
 def combine_trends_one_dim(regression_struct,model_list,sample_size=1000,sample_size_ensemble=1,plot=False):
@@ -132,15 +141,21 @@ def combine_trends_one_dim(regression_struct,model_list,sample_size=1000,sample_
                                          size=sample_size),(sample_size,1))
                 realization_ensemble.append(trends_model)
             ensemble_list.append(np.concatenate(realization_ensemble,axis=1))
+    
+    out_dtype=[('slope',np.float),('p-value',np.float),
+               ('bin_edge_left',np.float),('bin_edge_right',np.float),('hist',np.float)]
 
-    out_struct=np.zeros((1,),dtype=regression_struct.dtype)
+    nbins = np.ceil((sample_size*sample_size_ensemble)**(1.0/3.0))
+    out_struct=np.zeros((nbins,),dtype=out_dtype)
     if len(ensemble_list)>0:
         #apply additive noise model:
-        out_struct['slope'], out_struct['p-value']=additive_noise_model(ensemble_list,sample_size_ensemble,sample_size,plot=plot)
-        #out_struct['slope']=sum([ensemble.mean(-1).mean(-1) for ensemble in ensemble_list])/len(ensemble_list)
+        out_tuple=additive_noise_model(ensemble_list,sample_size_ensemble,sample_size,plot=plot)
     else:
         #If ensemble_list is empty (happens when all values are missing (e.g. over land). slope is 0.0, with no confidence. 
-        out_struct['slope'], out_struct['p-value']=(0.0,1.0)
+        out_tuple=(0.0,1.0,np.full((n,),np.nan),np.full((n,),np.nan),np.full((n,),np.nan))
+
+    for name_id, name in enumerate(out_struct.dtype.names):
+        out_struct[name][:] = out_tuple[name_id]
     return out_struct
 
 def additive_noise_model(ensemble_list,sample_size_ensemble,sample_size,plot=False):
@@ -173,15 +188,26 @@ def additive_noise_model(ensemble_list,sample_size_ensemble,sample_size,plot=Fal
     if p_value>0.5: p_value=1.0-p_value
 
     if plot:
-        ax=plt.subplot(122)
+        ax=plt.subplot(122,sharex=ax,sharey=ax)
         ax.hist(mc_simulation,alpha=0.5)
         ax.axvline(np.ma.mean(mc_simulation),color='g',linestyle='--')
         ax.axvline(0.0,color='r')
         ax.axvline(np.mean([np.mean(ni) for ni in noise_model_input]),color='k',linestyle=':')
         plt.show()
 
+    #Create histogram:
+    nbins = np.ceil((sample_size*sample_size_ensemble)**(1.0/3.0))
+    #hist, bin_edges = np.histogram(mc_simulation,bins='fd')
+    hist, bin_edges = np.histogram(mc_simulation,bins=nbins)
+
     #Factor 2 to make two-sided:
-    return np.ma.mean(mc_simulation),2*p_value
+    return (np.mean(mc_simulation),2*p_value,
+           _mk_cst_len(bin_edges[:-1],nbins), _mk_cst_len(bin_edges[1:],nbins), _mk_cst_len(hist,nbins))
+
+def _mk_cst_len(x,n):
+    y = np.full((n,),np.nan)
+    y[:min(len(y),len(x))] = x[:min(len(y),len(x))]
+    return y
 
 @jit
 def additive_noise_model_single_model_vec(x):

@@ -6,6 +6,7 @@ import random
 import multiprocessing
 from numba import jit
 import datetime
+import copy
 
 import scipy.stats as stats
 import matplotlib.pyplot as plt
@@ -25,7 +26,7 @@ import dask.async
 from reduce_along_axis_n_arrays import reduce_along_axis_n_chunked_arrays
 
 #External
-import regression
+from . import regression, combine
 
 @click.group()
 def regres_and_combine():
@@ -76,14 +77,14 @@ def get_years_axis_and_output_single_time(dataset,output):
 def combine_trend(input_file,output_file,num_procs=default_num_procs):
     with netCDF4.Dataset(input_file) as dataset:
         with netCDF4.Dataset(output_file,'w') as output:
-            regression_array_list, simulations_list = extract_regression_array(dataset)
+            dataset_grp, regression_array_list, simulations_list = extract_regression_array(dataset)
             
+            first_var_name=regression._dtype[0][0]
             output_grp = create_model_mean_tree(output)
-            netcdf_utils.replicate_netcdf_file(dataset,output_grp)
-            netcdf_utils.replicate_netcdf_var_dimensions(dataset,output_grp,regression._dtype[0][0])
+            netcdf_utils.replicate_netcdf_var_dimensions(dataset_grp,output_grp,first_var_name)
 
-            combined_trends=combine.combine_trends(regression_array_list,simulation_list,num_procs=num_procs)
-            write_structured_array(dataset,output_grp,regression._dtype[0][0],combined_trends)
+            combined_trends=combine.combine_trends(regression_array_list,simulations_list,num_procs=num_procs)
+            write_structured_array_combined(dataset_grp,output_grp,first_var_name,combined_trends)
     return
 
 @click.option('--num_procs',default=default_num_procs,help='')
@@ -93,36 +94,54 @@ def combine_trend(input_file,output_file,num_procs=default_num_procs):
 def combine_pearsoncorr(input_file,output_file,num_procs=default_num_procs):
     with netCDF4.Dataset(input_file) as dataset:
         with netCDF4.Dataset(output_file,'w') as output:
-            regression_array_list, simulations_list = extract_regression_array(dataset)
+            dataset_grp, regression_array_list, simulations_list = extract_regression_array(dataset)
 
+            first_var_name=regression._dtype[0][0]
             output_grp = create_model_mean_tree(output)
-            netcdf_utils.replicate_netcdf_file(dataset,output_grp)
-            netcdf_utils.replicate_netcdf_var_dimensions(dataset,output_grp,regression._dtype[0][0])
+            netcdf_utils.replicate_netcdf_var_dimensions(dataset_grp,output_grp,first_var_name)
 
-            combined_trends=combine.combine_pearsoncorr(regression_array_list,simulation_list,num_procs=num_procs)
-            write_structured_array(dataset,output_grp,regression._dtype[0][0],combined_trends)
+            combined_pearsoncorr=combine.combine_pearsoncorr(regression_array_list,simulations_list,num_procs=num_procs)
+            write_structured_array_combined(dataset_grp,output_grp,first_var_name,combined_pearsoncorr)
     return
 
 def create_model_mean_tree(output):
     grp_ins = output.createGroup('ALL')
     grp_ins.setncattr('level_name','institute')
     grp_mod = grp_ins.createGroup('MODEL-MEAN')
-    grp_ins.setncattr('level_name','model')
-    grp_ens = grp_ens.createGroup('r1i1p1')
-    grp_ins.setncattr('level_name','ensemble')
+    grp_mod.setncattr('level_name','model')
+    grp_ens = grp_mod.createGroup('r1i1p1')
+    grp_ens.setncattr('level_name','ensemble')
     return grp_ens
+
+def write_structured_array_combined(dataset,output,variable,struct_array):
+    fill_value=1e20
+    output.createDimension('bins',size=struct_array.shape[0])
+    for var_name in struct_array.dtype.names:
+        temp = np.ma.fix_invalid(struct_array[var_name], fill_value=fill_value)
+
+        if var_name in ['slope','r','p-value']:
+            temp = temp[0,...]
+            dimensions = dataset.variables[variable].dimensions
+        else:
+            temp = np.rollaxis(temp,0,len(temp.shape))
+            dimensions = dataset.variables[variable].dimensions + ('bins',)
+
+        output.createVariable(var_name,'f',
+                              dimensions,
+                              fill_value=fill_value)[:]=temp
+    return
 
 def write_structured_array(dataset,output,variable,struct_array):
     fill_value=1e20
     for var_name in struct_array.dtype.names:
+        temp = np.ma.fix_invalid(struct_array[var_name], fill_value=fill_value)
         output.createVariable(var_name,'f',
                             dataset.variables[variable].dimensions,
-                            fill_value=fill_value)[:]=np.ma.fix_invalid(struct_array[var_name],
-                                                        fill_value=fill_value)
+                            fill_value=fill_value)[:]=temp
     return
 
 def extract_regression_array(dataset):
-    simulation_list = []
+    simulations_list = []
     regression_array_list = []
     for institute in dataset.groups:
         grp_ins = dataset.groups[institute]
@@ -130,9 +149,9 @@ def extract_regression_array(dataset):
             grp_mod = grp_ins.groups[model]
             for ensemble in grp_mod.groups:
                 grp_ens =  grp_mod.groups[ensemble]
-                simulation_list.append(copy.copy((institute, model, ensemble)))
+                simulations_list.append(copy.copy((institute, model, ensemble)))
                 regression_array = np.empty(grp_ens.variables[regression._dtype[0][0]].shape,dtype=regression._dtype)
                 for var_name, dtype in regression._dtype:
                     regression_array[var_name] = grp_ens.variables[var_name][...]
                 regression_array_list.append(copy.copy(regression_array))
-    return regression_array_list, simulations_list
+    return grp_ens, regression_array_list, simulations_list
