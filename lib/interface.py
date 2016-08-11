@@ -69,12 +69,13 @@ def get_years_axis_and_output_single_time(dataset,output):
     temp_time.calendar=netcdf_utils.netcdf_calendar(dataset)
     return years_axis
 
-
+default_sample_size = 100
 @click.option('--num_procs',default=default_num_procs,help='')
+@click.option('--sample_size',default=default_sample_size,help='')
 @click.argument('output_file')
 @click.argument('input_file')
 @regres_and_combine.command()
-def combine_trend(input_file,output_file,num_procs=default_num_procs):
+def combine_trend(input_file,output_file,num_procs=default_num_procs, sample_size=default_sample_size):
     with netCDF4.Dataset(input_file) as dataset:
         with netCDF4.Dataset(output_file,'w') as output:
             dataset_grp, regression_array_list, simulations_list = extract_regression_array(dataset)
@@ -83,15 +84,16 @@ def combine_trend(input_file,output_file,num_procs=default_num_procs):
             output_grp = create_model_mean_tree(output)
             netcdf_utils.replicate_netcdf_var_dimensions(dataset_grp,output_grp,first_var_name)
 
-            combined_trends=combine.combine_trends(regression_array_list,simulations_list,num_procs=num_procs)
+            combined_trends=combine.combine_trends(regression_array_list,simulations_list,num_procs=num_procs, sample_size=sample_size)
             write_structured_array_combined(dataset_grp,output_grp,first_var_name,combined_trends)
     return
 
 @click.option('--num_procs',default=default_num_procs,help='')
+@click.option('--sample_size',default=default_sample_size,help='')
 @click.argument('output_file')
 @click.argument('input_file')
 @regres_and_combine.command()
-def combine_pearsoncorr(input_file,output_file,num_procs=default_num_procs):
+def combine_pearsoncorr(input_file,output_file,num_procs=default_num_procs, sample_size=default_sample_size):
     with netCDF4.Dataset(input_file) as dataset:
         with netCDF4.Dataset(output_file,'w') as output:
             dataset_grp, regression_array_list, simulations_list = extract_regression_array(dataset)
@@ -100,7 +102,7 @@ def combine_pearsoncorr(input_file,output_file,num_procs=default_num_procs):
             output_grp = create_model_mean_tree(output)
             netcdf_utils.replicate_netcdf_var_dimensions(dataset_grp,output_grp,first_var_name)
 
-            combined_pearsoncorr=combine.combine_pearsoncorr(regression_array_list,simulations_list,num_procs=num_procs)
+            combined_pearsoncorr=combine.combine_pearsoncorr(regression_array_list,simulations_list,num_procs=num_procs, sample_size=sample_size)
             write_structured_array_combined(dataset_grp,output_grp,first_var_name,combined_pearsoncorr)
     return
 

@@ -11,7 +11,7 @@ import copy
 import scipy.stats as stats
 #import matplotlib.pyplot as plt
 
-def combine_trends(regression_struct_list,model_list,num_procs=1):
+def combine_trends(regression_struct_list,model_list,num_procs=1,sample_size=1000):
     """
     Takes a lst of regressions obtained from regression_array  corresponding to a list
     of models of the form [(institute,model, ensemble),..] and a list of years axes [[1979,1980,...,2014],...]
@@ -31,7 +31,8 @@ def combine_trends(regression_struct_list,model_list,num_procs=1):
         combined_regression_struct=np.concatenate(map(lambda x:x[np.newaxis,...], regression_struct_list),axis=0)
 
         axis_split=np.argmax(combined_regression_struct.shape[1:])+1
-        return np.concatenate(pool_map( combine_trends_apply_vec,[ ( regression_struct, model_list) for 
+        state = _SharedRandomState()
+        return np.concatenate(pool_map( combine_trends_apply_vec,[ ( regression_struct, model_list, sample_size, state) for 
                                                         regression_struct in np.array_split(combined_regression_struct, num_procs,axis=axis_split)]),
                                                         axis=axis_split)
     finally:
@@ -42,10 +43,10 @@ def combine_trends(regression_struct_list,model_list,num_procs=1):
 def combine_trends_apply_vec(x):
     return combine_trends_apply(*x)
 
-def combine_trends_apply(regression_struct,model_list):
-    return np.apply_along_axis(combine_trends_one_dim,0,regression_struct,model_list)
+def combine_trends_apply(regression_struct,model_list,sample_size, state):
+    return np.apply_along_axis(combine_trends_one_dim,0,regression_struct,model_list, sample_size, state)
 
-def combine_pearsoncorr(regression_struct_list,model_list,num_procs=1):
+def combine_pearsoncorr(regression_struct_list,model_list,num_procs=1,sample_size=1000):
     """
     Takes a lst of regressions obtained from regression_array  corresponding to a list
     of models of the form [(institute,model, ensemble),..] and a list of years axes [[1979,1980,...,2014],...]
@@ -66,7 +67,8 @@ def combine_pearsoncorr(regression_struct_list,model_list,num_procs=1):
         combined_regression_struct=np.concatenate(map(lambda x:x[np.newaxis,...], regression_struct_list),axis=0)
 
         axis_split=np.argmax(combined_regression_struct.shape[1:])+1
-        return np.concatenate(pool_map( combine_pearsoncorr_apply_vec,[ ( regression_struct, model_list) for 
+        state = _SharedRandomState()
+        return np.concatenate(pool_map( combine_pearsoncorr_apply_vec,[ ( regression_struct, model_list, sample_size, state) for 
                                                         regression_struct in np.array_split(combined_regression_struct, num_procs,axis=axis_split)]),
                                                         axis=axis_split)
     finally:
@@ -74,13 +76,15 @@ def combine_pearsoncorr(regression_struct_list,model_list,num_procs=1):
             pool.close()
             pool.terminate()
 
+
+
 def combine_pearsoncorr_apply_vec(x):
     return combine_pearsoncorr_apply(*x)
 
-def combine_pearsoncorr_apply(regression_struct,model_list):
-    return np.apply_along_axis(combine_pearsoncorr_one_dim,0,regression_struct,model_list)
+def combine_pearsoncorr_apply(regression_struct,model_list,sample_size, state):
+    return np.apply_along_axis(combine_pearsoncorr_one_dim,0,regression_struct,model_list,sample_size, state)
 
-def combine_pearsoncorr_one_dim(regression_struct,model_list,sample_size=1000,sample_size_ensemble=1):
+def combine_pearsoncorr_one_dim(regression_struct,model_list,sample_size, state,sample_size_ensemble=1):
     """
     Combines pearson correlation along one dimension.
     """
@@ -88,19 +92,22 @@ def combine_pearsoncorr_one_dim(regression_struct,model_list,sample_size=1000,sa
     diff_model_list=sorted(list(set([model_desc[:-1] for model_desc in model_list])))
 
     ensemble_list=[]
-    for model_desc in diff_model_list:
-        model_indices=[model_id for model_id, model_desc_full in enumerate(model_list) if model_desc==model_desc_full[:-1]]
-        realization_ensemble=[]
-        if regression_struct['p-value'][model_indices[0]]!=1.0: 
-            for id in model_indices:
-                correlation_model=np.reshape(
-                                        stats.norm.rvs(
-                                        #Fisher trasform:
-                                         loc=np.arctanh(regression_struct[id]['r']),
-                                         scale=1/np.sqrt(regression_struct[id]['npoints']-3),
-                                         size=sample_size),(sample_size,1))
-                realization_ensemble.append(correlation_model)
-            ensemble_list.append(np.concatenate(realization_ensemble,axis=1))
+    with state as s:
+        for model_desc in diff_model_list:
+            model_indices=[model_id for model_id, model_desc_full in enumerate(model_list) if model_desc==model_desc_full[:-1]]
+            realization_ensemble=[]
+            if regression_struct['p-value'][model_indices[0]]!=1.0: 
+                for id in model_indices:
+                    if regression_struct[id]['npoints'] > 3:
+                        correlation_model=np.reshape(
+                                                stats.norm.rvs(
+                                                #Fisher trasform:
+                                                 loc=np.arctanh(regression_struct[id]['r']),
+                                                 scale=1/np.sqrt(regression_struct[id]['npoints']-3),
+                                                 size=sample_size),(sample_size,1))
+                        realization_ensemble.append(correlation_model)
+                if len(realization_ensemble) > 0:
+                    ensemble_list.append(np.concatenate(realization_ensemble,axis=1))
 
     out_dtype=[('r',np.float),('p-value',np.float),
                ('bin_edge_left',np.float),('bin_edge_right',np.float),('hist',np.float)]
@@ -118,7 +125,7 @@ def combine_pearsoncorr_one_dim(regression_struct,model_list,sample_size=1000,sa
         out_struct[name][:] = out_tuple[name_id]
     return out_struct
 
-def combine_trends_one_dim(regression_struct,model_list,sample_size=1000,sample_size_ensemble=1,plot=False):
+def combine_trends_one_dim(regression_struct,model_list,sample_size, state,sample_size_ensemble=1,plot=False):
     """
     Combines trends along one dimension.
     """
@@ -127,20 +134,23 @@ def combine_trends_one_dim(regression_struct,model_list,sample_size=1000,sample_
     
     #time_start=datetime.datetime.now()
     ensemble_list=[]
-    for model_desc in diff_model_list:
-        #Find indices corresponding to the model:
-        model_indices=[model_id for model_id, model_desc_full in enumerate(model_list) if model_desc==model_desc_full[:-1]]
-        realization_ensemble=[]
-        if regression_struct['p-value'][model_indices[0]]!=1.0: 
-            #if regressiohas some signifcance (e.g. it is not over land):
-            for id in model_indices:
-                #Use the t-distribution to find the probable trends: 
-                trends_model=np.reshape(stats.t.rvs(regression_struct[id]['npoints']-2,
-                                         loc=regression_struct[id]['slope'],
-                                         scale=regression_struct[id]['stderr'],
-                                         size=sample_size),(sample_size,1))
-                realization_ensemble.append(trends_model)
-            ensemble_list.append(np.concatenate(realization_ensemble,axis=1))
+    with state as s:
+        for model_desc in diff_model_list:
+            #Find indices corresponding to the model:
+            model_indices=[model_id for model_id, model_desc_full in enumerate(model_list) if model_desc==model_desc_full[:-1]]
+            realization_ensemble=[]
+            if regression_struct['p-value'][model_indices[0]]!=1.0: 
+                #if regressiohas some signifcance (e.g. it is not over land):
+                for id in model_indices:
+                    #Use the t-distribution to find the probable trends: 
+                    if regression_struct[id]['npoints'] > 2:
+                        trends_model=np.reshape(stats.t.rvs(regression_struct[id]['npoints']-2,
+                                                 loc=regression_struct[id]['slope'],
+                                                 scale=regression_struct[id]['stderr'],
+                                                 size=sample_size),(sample_size,1))
+                        realization_ensemble.append(trends_model)
+                if len(realization_ensemble)>0:
+                    ensemble_list.append(np.concatenate(realization_ensemble,axis=1))
     
     out_dtype=[('slope',np.float),('p-value',np.float),
                ('bin_edge_left',np.float),('bin_edge_right',np.float),('hist',np.float)]
@@ -296,3 +306,26 @@ def sample_with_replacement(population,sample):
         j = _int(sample[i] * len(population))
         result[i] = population[j]
     return result   
+
+class _SharedRandomState():
+    def __init__(self):
+        self.str = multiprocessing.Value(str)
+        self.array = multiprocessing.Array(uint,634)
+        self.pos = multiprocessing.Value(int)
+        self.has_gauss = multiprocessing.Value(int)
+        self.cached_gaussian = multiprocessing.Value(float)
+        self._lock = multiprocessing.Lock
+
+        self._states_list = ['str', 'array', 'pos', 'has_gauss', 'cached_gaussian'] 
+
+    def __enter__(self):
+        self._lock.acquire()
+        np.random.set_state(tuple([getattr(self,state) for state in self._states_list]))
+        return self
+
+    def __exit__(self, type, value, traceback):
+        val = np.random.get_state()
+        for id, state in enumerate(self._states_list): 
+            getattr(self,state)[:] = val[id]
+        self._lock.release()
+        return 
