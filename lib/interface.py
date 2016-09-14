@@ -1,4 +1,10 @@
 from __future__ import division, absolute_import, print_function
+import logging
+#logging.basicConfig(level=logging.INFO,
+logging.basicConfig(level=logging.WARNING,
+                    format='%(processName)-10s %(asctime)s.%(msecs)03d %(name)-12s %(levelname)-8s %(message)s',
+                    datefmt='%m-%d %H:%M')
+_logger = logging.getLogger(__name__)
 
 import numpy as np
 import random
@@ -75,7 +81,8 @@ default_sample_size = 100
 @click.argument('output_file')
 @click.argument('input_file')
 @regres_and_combine.command()
-def combine_trend(input_file,output_file,num_procs=default_num_procs, sample_size=default_sample_size):
+def combine_trend(input_file,output_file,num_procs=default_num_procs, sample_size=default_sample_size, info=False):
+    _logger.info('Combining trends with sample size {0}'.format(sample_size))
     with netCDF4.Dataset(input_file) as dataset:
         with netCDF4.Dataset(output_file,'w') as output:
             dataset_grp, regression_array_list, simulations_list = extract_regression_array(dataset)

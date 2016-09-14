@@ -1,5 +1,8 @@
 from __future__ import division, absolute_import, print_function
 
+import logging
+_logger = logging.getLogger(__name__)
+
 import numpy as np
 import random
 
@@ -10,6 +13,54 @@ import copy
 
 import scipy.stats as stats
 #import matplotlib.pyplot as plt
+
+
+class _SharedRandomState():
+    def __init__(self):
+        self.str = 'MT19937'
+        self.array = multiprocessing.Array('I',624)
+        self.pos = multiprocessing.Value('i')
+        self.has_gauss = multiprocessing.Value('i')
+        self.cached_gaussian = multiprocessing.Value('f')
+        self._lock = multiprocessing.Lock()
+
+        self._states_list = ['str', 'array', 'pos', 'has_gauss', 'cached_gaussian'] 
+        self.broadcast_state()
+
+    def broadcast_state(self):
+        val = np.random.get_state()
+        for id, state in enumerate(self._states_list[1:]): 
+            if 'value' in dir(getattr(self,state)):
+                getattr(self,state).value = val[id+1]
+            else:
+                getattr(self,state)[:] = val[id+1]
+
+    def __enter__(self):
+        self._lock.acquire()
+        val = [None] * len(self._states_list)
+        val[0] = self.str
+        for id, state in enumerate(self._states_list[1:]): 
+            if 'value' in dir(getattr(self,state)):
+                val[id+1] = getattr(self,state).value
+            else:
+                val[id+1] = getattr(self,state)[:]
+        return val
+
+    def __exit__(self, type, value, traceback):
+        self.broadcast_state()
+        self._lock.release()
+        return 
+
+class _PhonySharedRandomState():
+    def __init__(self):
+        return
+    def __enter__(self):
+        return self
+    def __exit__(self, type, value, traceback):
+        return
+
+_random_state = _SharedRandomState()
+#_random_state = _PhonySharedRandomState()
 
 def combine_trends(regression_struct_list,model_list,num_procs=1,sample_size=1000):
     """
@@ -31,8 +82,8 @@ def combine_trends(regression_struct_list,model_list,num_procs=1,sample_size=100
         combined_regression_struct=np.concatenate(map(lambda x:x[np.newaxis,...], regression_struct_list),axis=0)
 
         axis_split=np.argmax(combined_regression_struct.shape[1:])+1
-        state = _SharedRandomState()
-        return np.concatenate(pool_map( combine_trends_apply_vec,[ ( regression_struct, model_list, sample_size, state) for 
+        _logger.info('Begin combination')
+        return np.concatenate(pool_map( combine_trends_apply_vec,[ ( regression_struct, model_list, sample_size) for 
                                                         regression_struct in np.array_split(combined_regression_struct, num_procs,axis=axis_split)]),
                                                         axis=axis_split)
     finally:
@@ -43,8 +94,9 @@ def combine_trends(regression_struct_list,model_list,num_procs=1,sample_size=100
 def combine_trends_apply_vec(x):
     return combine_trends_apply(*x)
 
-def combine_trends_apply(regression_struct,model_list,sample_size, state):
-    return np.apply_along_axis(combine_trends_one_dim,0,regression_struct,model_list, sample_size, state)
+def combine_trends_apply(regression_struct,model_list,sample_size):
+    _logger.info('Applying along axis '+str(np.prod(regression_struct.shape[1:])))
+    return np.ma.apply_along_axis(combine_trends_one_dim, 0, regression_struct, model_list, sample_size)
 
 def combine_pearsoncorr(regression_struct_list,model_list,num_procs=1,sample_size=1000):
     """
@@ -67,8 +119,7 @@ def combine_pearsoncorr(regression_struct_list,model_list,num_procs=1,sample_siz
         combined_regression_struct=np.concatenate(map(lambda x:x[np.newaxis,...], regression_struct_list),axis=0)
 
         axis_split=np.argmax(combined_regression_struct.shape[1:])+1
-        state = _SharedRandomState()
-        return np.concatenate(pool_map( combine_pearsoncorr_apply_vec,[ ( regression_struct, model_list, sample_size, state) for 
+        return np.concatenate(pool_map( combine_pearsoncorr_apply_vec,[ ( regression_struct, model_list, sample_size) for 
                                                         regression_struct in np.array_split(combined_regression_struct, num_procs,axis=axis_split)]),
                                                         axis=axis_split)
     finally:
@@ -76,15 +127,14 @@ def combine_pearsoncorr(regression_struct_list,model_list,num_procs=1,sample_siz
             pool.close()
             pool.terminate()
 
-
-
 def combine_pearsoncorr_apply_vec(x):
     return combine_pearsoncorr_apply(*x)
 
-def combine_pearsoncorr_apply(regression_struct,model_list,sample_size, state):
-    return np.apply_along_axis(combine_pearsoncorr_one_dim,0,regression_struct,model_list,sample_size, state)
+def combine_pearsoncorr_apply(regression_struct,model_list,sample_size):
+    _logger.info('Applying along axis')
+    return np.ma.apply_along_axis(combine_pearsoncorr_one_dim,0,regression_struct,model_list,sample_size)
 
-def combine_pearsoncorr_one_dim(regression_struct,model_list,sample_size, state,sample_size_ensemble=1):
+def combine_pearsoncorr_one_dim(regression_struct,model_list,sample_size,sample_size_ensemble=1):
     """
     Combines pearson correlation along one dimension.
     """
@@ -92,7 +142,8 @@ def combine_pearsoncorr_one_dim(regression_struct,model_list,sample_size, state,
     diff_model_list=sorted(list(set([model_desc[:-1] for model_desc in model_list])))
 
     ensemble_list=[]
-    with state as s:
+    with _random_state as s:
+        np.random.set_state(s)
         for model_desc in diff_model_list:
             model_indices=[model_id for model_id, model_desc_full in enumerate(model_list) if model_desc==model_desc_full[:-1]]
             realization_ensemble=[]
@@ -125,22 +176,26 @@ def combine_pearsoncorr_one_dim(regression_struct,model_list,sample_size, state,
         out_struct[name][:] = out_tuple[name_id]
     return out_struct
 
-def combine_trends_one_dim(regression_struct,model_list,sample_size, state,sample_size_ensemble=1,plot=False):
+def combine_trends_one_dim(regression_struct,model_list,sample_size, sample_size_ensemble=1,plot=False):
     """
     Combines trends along one dimension.
     """
+    #t_start = datetime.datetime.now()
     #Find the list of models after discarding the ensemble designator:
     diff_model_list=sorted(list(set([model_desc[:-1] for model_desc in model_list])))
     
     #time_start=datetime.datetime.now()
     ensemble_list=[]
-    with state as s:
+    with _random_state as s:
+        _logger.debug('Setting random state '+str(s[1][0]))
+        np.random.set_state(s)
         for model_desc in diff_model_list:
+
             #Find indices corresponding to the model:
             model_indices=[model_id for model_id, model_desc_full in enumerate(model_list) if model_desc==model_desc_full[:-1]]
             realization_ensemble=[]
             if regression_struct['p-value'][model_indices[0]]!=1.0: 
-                #if regressiohas some signifcance (e.g. it is not over land):
+                #if regression has some signifcance (e.g. it is not over land):
                 for id in model_indices:
                     #Use the t-distribution to find the probable trends: 
                     if regression_struct[id]['npoints'] > 2:
@@ -166,6 +221,7 @@ def combine_trends_one_dim(regression_struct,model_list,sample_size, state,sampl
 
     for name_id, name in enumerate(out_struct.dtype.names):
         out_struct[name][:] = out_tuple[name_id]
+    #_logger.info('One application '+str(datetime.datetime.now() - t_start))
     return out_struct
 
 def additive_noise_model(ensemble_list,sample_size_ensemble,sample_size,plot=False):
@@ -174,6 +230,9 @@ def additive_noise_model(ensemble_list,sample_size_ensemble,sample_size,plot=Fal
     noise_model_input=[None]*len(ensemble_list)
     for id,item in enumerate(ensemble_list):
         noise_model_input[id]=np.ma.mean(item,axis=0)
+    #with _random_state as s:
+    #    _logger.debug('Setting random state '+str(s[1][0]))
+    #np.random.set_state(s)
     noise_variance=stats.describe(generate_noise_model(noise_model_input,np.split(np.random.random(size=noise_sample_size),2)))[3]
 
     if plot:
@@ -186,15 +245,23 @@ def additive_noise_model(ensemble_list,sample_size_ensemble,sample_size,plot=Fal
     if sample_size_ensemble==1:
         ensemble_list_ids=range(len(ensemble_list))
     else:
+        #with _random_state as s:
+        #    _logger.debug('Setting random state '+str(s[1][0]))
+        #    np.random.set_state(s)
         ensemble_list_ids=choice_with_replacement(len(ensemble_list),np.random.random(sample_size_ensemble*len(ensemble_list)))
-    #Create one argument for each:
-    args_list=[(ensemble_list[ensemble_id],ensemble_list,noise_variance,np.random.random(size=4*sample_size)) for ensemble_id in ensemble_list_ids]
+    #Create one argument for each but generate noise model only once:
+    noise_model_input = map(lambda x: np.ma.mean(x,axis=0),ensemble_list)
+    #with _random_state as s:
+    #    np.random.set_state(s)
+    noise_model_instance = generate_noise_model(noise_model_input,np.split(np.random.random(size=2*sample_size),2))
+    args_list=[(ensemble_list[ensemble_id],ensemble_list,noise_variance,np.random.random(size=2*sample_size),noise_model_instance) for ensemble_id in ensemble_list_ids]
+    #args_list=[(ensemble_list[ensemble_id],ensemble_list,noise_variance,np.random.random(size=4*sample_size)) for ensemble_id in ensemble_list_ids]
     
     #Compute the monte-carlo simulations. Subdivide into len(ensemble_list) chunks and average:
-    mc_simulation=np.ravel(np.reshape(np.concatenate(map(additive_noise_model_single_model_vec,args_list),axis=1),
+    mc_simulation = np.ravel(np.reshape(np.concatenate(additive_noise_model_single_model_map(args_list),axis=1),
                                 (sample_size,sample_size_ensemble,len(ensemble_list))).mean(-1))
     #Find p-value of null-hypothesis: 0.0 trends
-    p_value=stats.percentileofscore(mc_simulation,0.0,kind='weak')/100.0
+    p_value = stats.percentileofscore(mc_simulation,0.0,kind='weak')/100.0
     if p_value>0.5: p_value=1.0-p_value
 
     if plot:
@@ -214,30 +281,36 @@ def additive_noise_model(ensemble_list,sample_size_ensemble,sample_size,plot=Fal
     return (np.mean(mc_simulation),2*p_value,
            _mk_cst_len(bin_edges[:-1],nbins), _mk_cst_len(bin_edges[1:],nbins), _mk_cst_len(hist,nbins))
 
+@jit
 def _mk_cst_len(x,n):
     y = np.full((n,),np.nan)
     y[:min(len(y),len(x))] = x[:min(len(y),len(x))]
     return y
 
 @jit
-def additive_noise_model_single_model_vec(x):
-    #Alias function for easy multiprocessing:
-    return  additive_noise_model_single_model(*x)
+def additive_noise_model_single_model_map(x):
+    result = [None] * len(x)
+    for id, item in enumerate(x):
+        result[id] = additive_noise_model_single_model(*item)
+    return result
 
 @jit
-def additive_noise_model_single_model(ensemble,ensemble_list,noise_variance,sample):
-    ensemble_variance=np.ma.mean(ensemble,axis=0).var()
+def additive_noise_model_single_model(ensemble, ensemble_list, noise_variance, sample, noise_model_instance):
+    ensemble_variance = np.ma.mean(ensemble,axis=0).var()
+    #noise_model_input = [None]*len(ensemble_list)
+    #for id, item in enumerate(ensemble_list):
+    #    noise_model_input[id] = np.ma.mean(item,axis=0)
+    #Split the sample in four:
+    #mr_sample, r_sample, nme_sample, nmr_sample=np.split(sample,4)
+
+    mr_sample, r_sample=np.split(sample,2)
     #Laliberte, Howell, Kushner 2016 criterion on variance:
-    noise_model_input=[None]*len(ensemble_list)
-    for id,item in enumerate(ensemble_list):
-        noise_model_input[id]=np.ma.mean(item,axis=0)
-    #Split the sample in three:
-    mr_sample,r_sample,nme_sample,nmr_sample=np.split(sample,4)
-    if noise_variance>ensemble_variance:
+    if noise_variance > ensemble_variance:
         #scale the Swart et al. noise model by the variance deficit:
         mc_simulation=(
                        ( multiple_realization_distribution(ensemble,[mr_sample,r_sample])+
-                         np.sqrt(1.0-ensemble_variance/noise_variance)*generate_noise_model(noise_model_input,[nme_sample,nmr_sample])) )
+                         np.sqrt(1.0-ensemble_variance/noise_variance)*noise_model_instance) )
+                         #np.sqrt(1.0-ensemble_variance/noise_variance)*generate_noise_model(noise_model_input,[nme_sample,nmr_sample])) )
     else:
         #do not add noise model because ensemble is noisy enough:
         mc_simulation=(
@@ -248,16 +321,10 @@ def additive_noise_model_single_model(ensemble,ensemble_list,noise_variance,samp
 @jit
 def multiple_realization_distribution(ensemble,sample):
     #Chose size number of realizations in the ensemble:
-    realization_list_id=choice_with_replacement(ensemble.shape[1],sample[0])
-    temp=np.zeros((len(sample[1]),))
-    for id, (realization_id, sample_item) in enumerate(zip(realization_list_id,sample[1])):
-        temp[id]=single_realization_distribution(ensemble[:,realization_id],[sample_item,]) 
-    return temp
-
-@jit
-def single_realization_distribution(realization,sample):
-    #Choose one element in the realization:
-    return np.array(sample_with_replacement(np.squeeze(realization),sample))
+    realization_list_id = choice_with_replacement(ensemble.shape[1],sample[0])
+    element_list_id = choice_with_replacement(ensemble.shape[0],sample[1])
+    out = ensemble[np.array(element_list_id),np.array(realization_list_id)]
+    return out
 
 @jit
 def generate_noise_model(ensemble_list,sample):
@@ -269,20 +336,20 @@ def generate_noise_model(ensemble_list,sample):
     ids_gt_one=np.arange(len(ensemble_list))[ensemble_size>1]
     if len(ids_gt_one)>0:
         #Split sample in two:
-        ensemble_sample,realization_sample=sample
+        ensemble_sample, realization_sample=sample
 
-        ensemble_list_id=ids_gt_one[choice_with_replacement(len(ids_gt_one),ensemble_sample)]
+        ensemble_list_id = ids_gt_one[choice_with_replacement(len(ids_gt_one),ensemble_sample)]
 
         temp=np.zeros((len(realization_sample),))
         for id, (ens_id, sample_item) in enumerate(zip(ensemble_list_id,realization_sample)):
-            temp[id]=noise_model(ensemble_list[ens_id],[sample_item,])
+            temp[id] = noise_model(ensemble_list[ens_id],[sample_item,])
         return temp
     else:
         return np.zeros((len(sample[0]),))
 
 @jit
 def noise_model(ensemble,sample):
-    realization_id=choice_with_replacement(len(ensemble),sample)[0]
+    realization_id = choice_with_replacement(len(ensemble),sample)[0]
     return np.sqrt(np.float(len(ensemble))/np.float((len(ensemble)-1)))*(ensemble[realization_id]-ensemble.mean())
 
 #http://code.activestate.com/recipes/273085-sample-with-replacement/
@@ -295,37 +362,3 @@ def choice_with_replacement(length,sample):
         j = _int(sample[i] * length)
         result[i] = xrange(length)[j]
     return result   
-
-#http://code.activestate.com/recipes/273085-sample-with-replacement/
-@jit
-def sample_with_replacement(population,sample):
-    "Chooses size random indices (with replacement) from 0 to length"
-    _int = int  # speed hack 
-    result = [None] * len(sample)
-    for i in xrange(len(sample)):
-        j = _int(sample[i] * len(population))
-        result[i] = population[j]
-    return result   
-
-class _SharedRandomState():
-    def __init__(self):
-        self.str = multiprocessing.Value(str)
-        self.array = multiprocessing.Array(uint,634)
-        self.pos = multiprocessing.Value(int)
-        self.has_gauss = multiprocessing.Value(int)
-        self.cached_gaussian = multiprocessing.Value(float)
-        self._lock = multiprocessing.Lock
-
-        self._states_list = ['str', 'array', 'pos', 'has_gauss', 'cached_gaussian'] 
-
-    def __enter__(self):
-        self._lock.acquire()
-        np.random.set_state(tuple([getattr(self,state) for state in self._states_list]))
-        return self
-
-    def __exit__(self, type, value, traceback):
-        val = np.random.get_state()
-        for id, state in enumerate(self._states_list): 
-            getattr(self,state)[:] = val[id]
-        self._lock.release()
-        return 
