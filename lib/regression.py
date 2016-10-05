@@ -24,7 +24,7 @@ import dask.multiprocessing
 import dask.async
 from reduce_along_axis_n_arrays import reduce_along_axis_n_chunked_arrays
 
-_dtype=[('slope',np.float),('intercept',np.float),('r-value',np.float),('p-value',np.float),('stderr',np.float),('npoints',np.int)]
+_dtype=[('slope',np.float),('intercept',np.float),('r-value',np.float),('p-value',np.float),('stderr',np.float),('npoints',np.int),('xmean',np.float)]
 
 def trend_dataset_mp(ds,response_variable,num_procs=1):
     """
@@ -80,12 +80,12 @@ def linregres(x,y):
     return assign_to_struct(nanlinregress(x,y),dtype=_dtype)
 
 def nanlinregress(x,y):
-    mask=~np.logical_or(np.isnan(x),np.isnan(y))
-    npoints=np.count_nonzero(mask)
+    mask = ~np.logical_or(np.isnan(x),np.isnan(y))
+    npoints = np.count_nonzero(mask)
     if npoints>3:
-        return stats.linregress(x[mask],y[mask])+(npoints,)
+        return stats.linregress(x[mask],y[mask])+(npoints,np.mean(x[mask]))
     else:
-        return tuple([ np.nan for item in stats.linregress([0.0,0.5,1.0],[0.0,0.5,1.0])])+(npoints,)
+        return tuple([ np.nan for item in stats.linregress([0.0,0.5,1.0],[0.0,0.5,1.0])])+(npoints,np.mean(x[mask]))
 
 def assign_to_struct(out,dtype=[('x',np.float),]):
     out_struct=np.empty((1,),dtype=dtype)

@@ -62,18 +62,22 @@ def trend(variable,input_file,output_file,num_procs=default_num_procs):
     return
 
 def get_years_axis_and_output_single_time(dataset,output):
-    date_axis=netcdf_utils.get_time(dataset)
+    date_axis = map(convert_to_datetime,netcdf_utils.get_time(dataset))
     min_year=np.min([date.year for date in date_axis])
     units='years since {0}-01-01 00:00:00'.format(min_year)
-    years_axis=timeaxis_mod.Date2num(date_axis,units,netcdf_utils.netcdf_calendar(dataset))
+    #Convert calendar to standard:
+    years_axis = timeaxis_mod.Date2num(date_axis,units,'standard')
 
     output.createDimension('time',size=1)
     temp_time=output.createVariable('time','d',('time',))
     units='days since {0}-01-01 00:00:00'.format(min_year)
-    temp_time[:]=netCDF4.date2num(date_axis[0],units,netcdf_utils.netcdf_calendar(dataset))
+    temp_time[:]=netCDF4.date2num(date_axis[0],units,'standard')
     temp_time.units=units
-    temp_time.calendar=netcdf_utils.netcdf_calendar(dataset)
+    temp_time.calendar='standard'
     return years_axis
+
+def convert_to_datetime(phony_datetime):
+    return datetime.datetime(*[getattr(phony_datetime,type) for type in ['year','month','day','hour']])
 
 default_sample_size = 100
 @click.option('--num_procs',default=default_num_procs,help='')
@@ -128,7 +132,7 @@ def write_structured_array_combined(dataset,output,variable,struct_array):
     for var_name in struct_array.dtype.names:
         temp = np.ma.fix_invalid(struct_array[var_name], fill_value=fill_value)
 
-        if var_name in ['slope','r','p-value']:
+        if var_name in ['slope','r','p-value','xmean','intercept','nmod']:
             temp = temp[0,...]
             dimensions = dataset.variables[variable].dimensions
         else:
@@ -161,6 +165,6 @@ def extract_regression_array(dataset):
                 simulations_list.append(copy.copy((institute, model, ensemble)))
                 regression_array = np.empty(grp_ens.variables[regression._dtype[0][0]].shape,dtype=regression._dtype)
                 for var_name, dtype in regression._dtype:
-                    regression_array[var_name] = grp_ens.variables[var_name][...]
+                    regression_array[var_name] = np.ma.filled(grp_ens.variables[var_name][...],np.nan)
                 regression_array_list.append(copy.copy(regression_array))
     return grp_ens, regression_array_list, simulations_list

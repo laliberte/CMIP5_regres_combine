@@ -14,6 +14,7 @@ import copy
 import scipy.stats as stats
 #import matplotlib.pyplot as plt
 
+fill_value=np.iinfo(np.int32).max
 
 class _SharedRandomState():
     def __init__(self):
@@ -84,7 +85,9 @@ def combine_trends(regression_struct_list,model_list,num_procs=1,sample_size=100
         axis_split=np.argmax(combined_regression_struct.shape[1:])+1
         _logger.info('Begin combination')
         return np.concatenate(pool_map( combine_trends_apply_vec,[ ( regression_struct, model_list, sample_size) for 
-                                                        regression_struct in np.array_split(combined_regression_struct, num_procs,axis=axis_split)]),
+                                                        regression_struct in np.array_split(combined_regression_struct,
+                                                                                            np.minimum(num_procs,combined_regression_struct.shape[axis_split]),
+                                                                                            axis =axis_split)]),
                                                         axis=axis_split)
     finally:
         if num_procs>1:
@@ -96,7 +99,7 @@ def combine_trends_apply_vec(x):
 
 def combine_trends_apply(regression_struct,model_list,sample_size):
     _logger.info('Applying along axis '+str(np.prod(regression_struct.shape[1:])))
-    return np.ma.apply_along_axis(combine_trends_one_dim, 0, regression_struct, model_list, sample_size)
+    return np.apply_along_axis(combine_trends_one_dim, 0, regression_struct, model_list, sample_size)
 
 def combine_pearsoncorr(regression_struct_list,model_list,num_procs=1,sample_size=1000):
     """
@@ -116,6 +119,7 @@ def combine_pearsoncorr(regression_struct_list,model_list,num_procs=1,sample_siz
         pool_map=pool.map
     try:
         #combined_regression_struct=np.concatenate(regression_struct_list,axis=0)
+        #combined_regression_struct=np.concatenate(map(lambda x:x[np.newaxis,...], regression_struct_list),axis=0)
         combined_regression_struct=np.concatenate(map(lambda x:x[np.newaxis,...], regression_struct_list),axis=0)
 
         axis_split=np.argmax(combined_regression_struct.shape[1:])+1
@@ -132,7 +136,7 @@ def combine_pearsoncorr_apply_vec(x):
 
 def combine_pearsoncorr_apply(regression_struct,model_list,sample_size):
     _logger.info('Applying along axis')
-    return np.ma.apply_along_axis(combine_pearsoncorr_one_dim,0,regression_struct,model_list,sample_size)
+    return np.apply_along_axis(combine_pearsoncorr_one_dim,0,regression_struct,model_list,sample_size)
 
 def combine_pearsoncorr_one_dim(regression_struct,model_list,sample_size,sample_size_ensemble=1):
     """
@@ -146,19 +150,24 @@ def combine_pearsoncorr_one_dim(regression_struct,model_list,sample_size,sample_
         np.random.set_state(s)
         for model_desc in diff_model_list:
             model_indices=[model_id for model_id, model_desc_full in enumerate(model_list) if model_desc==model_desc_full[:-1]]
+            valid_model_indices = []
+            for id in model_indices:
+                if not ( np.isnan(regression_struct['p-value'][id]) or
+                         regression_struct['p-value'][id] == 1.0 ): 
+                    valid_model_indices.append(id)
+
             realization_ensemble=[]
-            if regression_struct['p-value'][model_indices[0]]!=1.0: 
-                for id in model_indices:
-                    if regression_struct[id]['npoints'] > 3:
-                        correlation_model=np.reshape(
-                                                stats.norm.rvs(
-                                                #Fisher trasform:
-                                                 loc=np.arctanh(regression_struct[id]['r']),
-                                                 scale=1/np.sqrt(regression_struct[id]['npoints']-3),
-                                                 size=sample_size),(sample_size,1))
-                        realization_ensemble.append(correlation_model)
-                if len(realization_ensemble) > 0:
-                    ensemble_list.append(np.concatenate(realization_ensemble,axis=1))
+            for id in valid_model_indices:
+                if regression_struct[id]['npoints'] > 3:
+                    correlation_model=np.reshape(
+                                            stats.norm.rvs(
+                                            #Fisher trasform:
+                                             loc=np.arctanh(regression_struct[id]['r']),
+                                             scale=1/np.sqrt(regression_struct[id]['npoints']-3),
+                                             size=sample_size),(sample_size,1))
+                    realization_ensemble.append(correlation_model)
+            if len(realization_ensemble) > 0:
+                ensemble_list.append(np.concatenate(realization_ensemble,axis=1))
 
     out_dtype=[('r',np.float),('p-value',np.float),
                ('bin_edge_left',np.float),('bin_edge_right',np.float),('hist',np.float)]
@@ -186,6 +195,8 @@ def combine_trends_one_dim(regression_struct,model_list,sample_size, sample_size
     
     #time_start=datetime.datetime.now()
     ensemble_list=[]
+    intercept_list=[]
+    xmean_list=[]
     with _random_state as s:
         _logger.debug('Setting random state '+str(s[1][0]))
         np.random.set_state(s)
@@ -193,31 +204,45 @@ def combine_trends_one_dim(regression_struct,model_list,sample_size, sample_size
 
             #Find indices corresponding to the model:
             model_indices=[model_id for model_id, model_desc_full in enumerate(model_list) if model_desc==model_desc_full[:-1]]
+            valid_model_indices = []
+            for id in model_indices:
+                if not ( np.isnan(regression_struct['p-value'][id])  or
+                         regression_struct['p-value'][id] == 1.0 ): 
+                    valid_model_indices.append(id)
+                
             realization_ensemble=[]
-            if regression_struct['p-value'][model_indices[0]]!=1.0: 
-                #if regression has some signifcance (e.g. it is not over land):
-                for id in model_indices:
-                    #Use the t-distribution to find the probable trends: 
-                    if regression_struct[id]['npoints'] > 2:
-                        trends_model=np.reshape(stats.t.rvs(regression_struct[id]['npoints']-2,
-                                                 loc=regression_struct[id]['slope'],
-                                                 scale=regression_struct[id]['stderr'],
-                                                 size=sample_size),(sample_size,1))
-                        realization_ensemble.append(trends_model)
-                if len(realization_ensemble)>0:
-                    ensemble_list.append(np.concatenate(realization_ensemble,axis=1))
+            intercept_realization_ensemble=[]
+            xmean_realization_ensemble=[]
+            #if regression has some signifcance (e.g. it is not over land):
+            for id in valid_model_indices:
+                #Use the t-distribution to find the probable trends: 
+                if regression_struct[id]['npoints'] > 2:
+                    trends_model = np.reshape(stats.t.rvs(regression_struct[id]['npoints']-2,
+                                             loc=regression_struct[id]['slope'],
+                                             scale=regression_struct[id]['stderr'],
+                                             size=sample_size),(sample_size,1))
+                    realization_ensemble.append(trends_model)
+                    intercept_realization_ensemble.append(regression_struct[id]['intercept'])
+                    xmean_realization_ensemble.append(regression_struct[id]['xmean'])
+            if len(realization_ensemble)>0:
+                ensemble_list.append(np.concatenate(realization_ensemble,axis=1))
+                intercept_list.append(np.mean(intercept_realization_ensemble))
+                xmean_list.append(np.mean(xmean_realization_ensemble))
     
     out_dtype=[('slope',np.float),('p-value',np.float),
-               ('bin_edge_left',np.float),('bin_edge_right',np.float),('hist',np.float)]
+               ('bin_edge_left',np.float),('bin_edge_right',np.float),('hist',np.float),
+               ('intercept',np.float),('xmean',np.float),('nmod',np.int)]
 
     nbins = np.ceil((sample_size*sample_size_ensemble)**(1.0/3.0))
     out_struct=np.zeros((nbins,),dtype=out_dtype)
     if len(ensemble_list)>0:
         #apply additive noise model:
-        out_tuple=additive_noise_model(ensemble_list,sample_size_ensemble,sample_size,plot=plot)
+        out_tuple = additive_noise_model(ensemble_list,sample_size_ensemble,sample_size,plot=plot)
+        out_tuple+=(np.mean(intercept_list),np.mean(xmean_list),len(ensemble_list))
     else:
         #If ensemble_list is empty (happens when all values are missing (e.g. over land). slope is 0.0, with no confidence. 
-        out_tuple=(0.0,1.0,np.full((n,),np.nan),np.full((n,),np.nan),np.full((n,),np.nan))
+        out_tuple = (0.0,1.0,np.full((n,),np.nan),np.full((n,),np.nan),np.full((n,),np.nan))
+        out_tuple+=(np.nan,np.nan,0)
 
     for name_id, name in enumerate(out_struct.dtype.names):
         out_struct[name][:] = out_tuple[name_id]
@@ -229,7 +254,7 @@ def additive_noise_model(ensemble_list,sample_size_ensemble,sample_size,plot=Fal
     noise_sample_size=1000
     noise_model_input=[None]*len(ensemble_list)
     for id,item in enumerate(ensemble_list):
-        noise_model_input[id]=np.ma.mean(item,axis=0)
+        noise_model_input[id]=np.mean(item,axis=0)
     #with _random_state as s:
     #    _logger.debug('Setting random state '+str(s[1][0]))
     #np.random.set_state(s)
@@ -250,7 +275,7 @@ def additive_noise_model(ensemble_list,sample_size_ensemble,sample_size,plot=Fal
         #    np.random.set_state(s)
         ensemble_list_ids=choice_with_replacement(len(ensemble_list),np.random.random(sample_size_ensemble*len(ensemble_list)))
     #Create one argument for each but generate noise model only once:
-    noise_model_input = map(lambda x: np.ma.mean(x,axis=0),ensemble_list)
+    noise_model_input = map(lambda x: np.mean(x,axis=0),ensemble_list)
     #with _random_state as s:
     #    np.random.set_state(s)
     noise_model_instance = generate_noise_model(noise_model_input,np.split(np.random.random(size=2*sample_size),2))
@@ -267,7 +292,7 @@ def additive_noise_model(ensemble_list,sample_size_ensemble,sample_size,plot=Fal
     if plot:
         ax=plt.subplot(122,sharex=ax,sharey=ax)
         ax.hist(mc_simulation,alpha=0.5)
-        ax.axvline(np.ma.mean(mc_simulation),color='g',linestyle='--')
+        ax.axvline(np.mean(mc_simulation),color='g',linestyle='--')
         ax.axvline(0.0,color='r')
         ax.axvline(np.mean([np.mean(ni) for ni in noise_model_input]),color='k',linestyle=':')
         plt.show()
@@ -296,10 +321,10 @@ def additive_noise_model_single_model_map(x):
 
 @jit
 def additive_noise_model_single_model(ensemble, ensemble_list, noise_variance, sample, noise_model_instance):
-    ensemble_variance = np.ma.mean(ensemble,axis=0).var()
+    ensemble_variance = np.mean(ensemble,axis=0).var()
     #noise_model_input = [None]*len(ensemble_list)
     #for id, item in enumerate(ensemble_list):
-    #    noise_model_input[id] = np.ma.mean(item,axis=0)
+    #    noise_model_input[id] = np.mean(item,axis=0)
     #Split the sample in four:
     #mr_sample, r_sample, nme_sample, nmr_sample=np.split(sample,4)
 
