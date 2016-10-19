@@ -21,8 +21,8 @@ import click
 import netCDF4
 
 import netcdf4_soft_links.netcdf_utils as netcdf_utils
-import netcdf4_soft_links.timeaxis_mod as timeaxis_mod
-import netcdf4_soft_links.subset_utils as subset_utils
+import netcdf4_soft_links.remote_netcdf.timeaxis_mod as timeaxis_mod
+import netcdf4_soft_links.subset.subset_utils as subset_utils
 
 import xarray as xr
 
