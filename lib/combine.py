@@ -179,7 +179,7 @@ def combine_pearsoncorr_one_dim(regression_struct,model_list,sample_size,sample_
         out_tuple=additive_noise_model(ensemble_list,sample_size_ensemble,sample_size,plot=plot)
     else:
         #If ensemble_list is empty (happens when all values are missing (e.g. over land). slope is 0.0, with no confidence. 
-        out_tuple=(0.0,1.0,np.full((n,),np.nan),np.full((n,),np.nan),np.full((n,),np.nan))
+        out_tuple=(0.0,1.0,np.full((nbins,),np.nan),np.full((nbins,),np.nan),np.full((nbins,),np.nan))
 
     for name_id, name in enumerate(out_struct.dtype.names):
         out_struct[name][:] = out_tuple[name_id]
@@ -241,7 +241,7 @@ def combine_trends_one_dim(regression_struct,model_list,sample_size, sample_size
         out_tuple+=(np.mean(intercept_list),np.mean(xmean_list),len(ensemble_list))
     else:
         #If ensemble_list is empty (happens when all values are missing (e.g. over land). slope is 0.0, with no confidence. 
-        out_tuple = (0.0,1.0,np.full((n,),np.nan),np.full((n,),np.nan),np.full((n,),np.nan))
+        out_tuple = (0.0,1.0,np.full((nbins,),np.nan),np.full((nbins,),np.nan),np.full((nbins,),np.nan))
         out_tuple+=(np.nan,np.nan,0)
 
     for name_id, name in enumerate(out_struct.dtype.names):
