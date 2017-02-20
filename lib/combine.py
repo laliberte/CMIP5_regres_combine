@@ -80,14 +80,14 @@ def combine_trends(regression_struct_list,model_list,num_procs=1,sample_size=100
         pool=multiprocessing.Pool(num_procs)
         pool_map=pool.map
     try:
-        combined_regression_struct=np.concatenate(map(lambda x:x[np.newaxis,...], regression_struct_list),axis=0)
+        combined_regression_struct=np.concatenate(list(map(lambda x:x[np.newaxis,...], regression_struct_list)),axis=0)
 
         axis_split=np.argmax(combined_regression_struct.shape[1:])+1
         _logger.info('Begin combination')
-        return np.concatenate(pool_map( combine_trends_apply_vec,[ ( regression_struct, model_list, sample_size) for 
+        return np.concatenate(list(pool_map( combine_trends_apply_vec,[ ( regression_struct, model_list, sample_size) for 
                                                         regression_struct in np.array_split(combined_regression_struct,
                                                                                             np.minimum(num_procs,combined_regression_struct.shape[axis_split]),
-                                                                                            axis =axis_split)]),
+                                                                                            axis =axis_split)])),
                                                         axis=axis_split)
     finally:
         if num_procs>1:
@@ -120,11 +120,11 @@ def combine_pearsoncorr(regression_struct_list,model_list,num_procs=1,sample_siz
     try:
         #combined_regression_struct=np.concatenate(regression_struct_list,axis=0)
         #combined_regression_struct=np.concatenate(map(lambda x:x[np.newaxis,...], regression_struct_list),axis=0)
-        combined_regression_struct=np.concatenate(map(lambda x:x[np.newaxis,...], regression_struct_list),axis=0)
+        combined_regression_struct=np.concatenate(list(map(lambda x:x[np.newaxis,...], regression_struct_list),axis=0))
 
         axis_split=np.argmax(combined_regression_struct.shape[1:])+1
-        return np.concatenate(pool_map( combine_pearsoncorr_apply_vec,[ ( regression_struct, model_list, sample_size) for 
-                                                        regression_struct in np.array_split(combined_regression_struct, num_procs,axis=axis_split)]),
+        return np.concatenate(list(pool_map( combine_pearsoncorr_apply_vec,[ ( regression_struct, model_list, sample_size) for 
+                                                        regression_struct in np.array_split(combined_regression_struct, num_procs,axis=axis_split)])),
                                                         axis=axis_split)
     finally:
         if num_procs>1:
@@ -275,7 +275,7 @@ def additive_noise_model(ensemble_list,sample_size_ensemble,sample_size,plot=Fal
         #    np.random.set_state(s)
         ensemble_list_ids=choice_with_replacement(len(ensemble_list),np.random.random(sample_size_ensemble*len(ensemble_list)))
     #Create one argument for each but generate noise model only once:
-    noise_model_input = map(lambda x: np.mean(x,axis=0),ensemble_list)
+    noise_model_input = list(map(lambda x: np.mean(x,axis=0),ensemble_list))
     #with _random_state as s:
     #    np.random.set_state(s)
     noise_model_instance = generate_noise_model(noise_model_input,np.split(np.random.random(size=2*sample_size),2))

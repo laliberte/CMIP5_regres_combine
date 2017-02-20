@@ -20,9 +20,8 @@ import matplotlib.pyplot as plt
 import click
 import netCDF4
 
-import netcdf4_soft_links.netcdf_utils as netcdf_utils
+import netcdf4_soft_links.ncutils as ncutils
 import netcdf4_soft_links.remote_netcdf.timeaxis_mod as timeaxis_mod
-import netcdf4_soft_links.subset.subset_utils as subset_utils
 
 import xarray as xr
 
@@ -54,15 +53,15 @@ def trend(variable,input_file,output_file,num_procs=default_num_procs):
                                         np.ma.filled(dataset.variables[variable][:],fill_value=np.nan))},
                             coords={dim:(dataset.variables[dim].dimensions,dataset.variables[dim][:]) for dim in dataset.variables[variable].dimensions})
             ds['time']=years_axis
-            netcdf_utils.replicate_netcdf_file(dataset,output)
-            netcdf_utils.replicate_netcdf_var_dimensions(dataset,output,variable)
+            ncutils.replicate.replicate_netcdf_file(dataset,output)
+            ncutils.replicate.replicate_netcdf_var_dimensions(dataset,output,variable)
 
             ds_trend=regression.trend_dataset_mp(ds,variable,num_procs=num_procs)
             write_structured_array(dataset,output,variable,ds_trend[variable+'_regres_time'].values)
     return
 
 def get_years_axis_and_output_single_time(dataset,output):
-    date_axis = map(convert_to_datetime,netcdf_utils.get_time(dataset))
+    date_axis = [convert_to_datetime(x) for x in ncutils.time.get_time(dataset)]
     min_year=np.min([date.year for date in date_axis])
     units='years since {0}-01-01 00:00:00'.format(min_year)
     #Convert calendar to standard:
@@ -93,7 +92,7 @@ def combine_trend(input_file,output_file,num_procs=default_num_procs, sample_siz
             
             first_var_name=regression._dtype[0][0]
             output_grp = create_model_mean_tree(output)
-            netcdf_utils.replicate_netcdf_var_dimensions(dataset_grp,output_grp,first_var_name)
+            ncutils.replicate.replicate_netcdf_var_dimensions(dataset_grp,output_grp,first_var_name)
 
             combined_trends=combine.combine_trends(regression_array_list,simulations_list,num_procs=num_procs, sample_size=sample_size)
             write_structured_array_combined(dataset_grp,output_grp,first_var_name,combined_trends)
@@ -111,7 +110,7 @@ def combine_pearsoncorr(input_file,output_file,num_procs=default_num_procs, samp
 
             first_var_name=regression._dtype[0][0]
             output_grp = create_model_mean_tree(output)
-            netcdf_utils.replicate_netcdf_var_dimensions(dataset_grp,output_grp,first_var_name)
+            ncutils.replicate.replicate_netcdf_var_dimensions(dataset_grp,output_grp,first_var_name)
 
             combined_pearsoncorr=combine.combine_pearsoncorr(regression_array_list,simulations_list,num_procs=num_procs, sample_size=sample_size)
             write_structured_array_combined(dataset_grp,output_grp,first_var_name,combined_pearsoncorr)
