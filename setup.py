@@ -14,7 +14,7 @@ from setuptools import setup, find_packages
 package_name='CMIP5_regression_combine'
 setup(
        name = package_name,
-       version = "0.2",
+       version = "0.3",
        packages=[package_name],
        package_dir = {package_name: 'lib'},
 #
@@ -34,8 +34,8 @@ setup(
             "Topic :: Scientific/Engineering :: Mathematics"
         ],
         long_description=read('README'),
-        install_requires = ['numpy','numba','scipy','netcdf4_soft_links',
-                            'reduce_along_axis_n_arrays','click','dask',
+        install_requires = ['numpy', 'scipy', 'netcdf4_soft_links',
+                            'reduce_along_axis_n_arrays', 'click', 'dask',
                             'xarray', 'toolz', 'matplotlib'],
         zip_safe=False,
         entry_points = {
