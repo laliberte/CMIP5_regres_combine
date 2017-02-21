@@ -36,7 +36,7 @@ def regression_dataset_mp(ds,predictor_variable,response_variable,num_procs=1):
     else:
         pool=multiprocessing.Pool(num_procs)
         try:
-            with dask.set_options(get=dask.multiprocessing.get,pool=pool):
+            with dask.set_options(get=dask.multiprocessing.get, pool=pool):
                 ds.load()
         finally:
             pool.terminate()
@@ -52,7 +52,7 @@ def regression_dataset(ds,variable,dim_to_regres,num_chunks=1):
 
     return (ds[variable].chunk(chunking)
                           .reduce(regression_array,
-                                 dim=dim_to_regres,allow_lazy=True,
+                                 dim=dim_to_regres, allow_lazy=True,
                                  x=ds[dim_to_regres].values)
                           .to_dataset(name=variable+'_regres_'+dim_to_regres))
 
