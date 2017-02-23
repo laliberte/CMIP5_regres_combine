@@ -7,7 +7,6 @@ logging.basicConfig(level=logging.WARNING,
 _logger = logging.getLogger(__name__)
 
 import numpy as np
-import pandas as pd
 import random
 
 import multiprocessing
@@ -25,10 +24,10 @@ import netcdf4_soft_links.ncutils as ncutils
 import netcdf4_soft_links.remote_netcdf.timeaxis_mod as timeaxis_mod
 
 import xarray as xr
+import pandas as pd
 
 import dask.array as da
-#import dask.multiprocessing 
-#import dask.async
+import dask.dataframe as dd
 from reduce_along_axis_n_arrays import reduce_along_axis_n_chunked_arrays
 
 #External
@@ -108,26 +107,35 @@ def combine_pearsoncorr(input_file,output_file,num_procs=default_num_procs, samp
 
 def combine_any(input_file, output_file, field, simulations_desc, num_procs,
                 sample_size):
+    df_combined = combine.combine_from_input(
+                    input_file, extract_regression_xarray,
+                    field, simulations_desc,
+                    num_procs=num_procs,
+                    sample_size=sample_size)
+
     with netCDF4.Dataset(input_file) as dataset:
         with netCDF4.Dataset(output_file,'w') as output:
-            df = extract_regression_xarray(dataset, simulations_desc)
-            
             first_var_name=regression._dtype[0][0]
             output_grp = create_model_mean_tree(output)
-            dataset_grp = dataset
-            for idx in range(3):
-                dataset_grp = dataset_grp.groups.popitem()[1]
+            dataset_grp = get_dataset_group(dataset, simulations_desc)
             ncutils.replicate.replicate_netcdf_var_dimensions(dataset_grp, output_grp, first_var_name)
-
-            df_combined = combine.combine_trends(df, num_procs=num_procs,
-                                                 sample_size=sample_size)
             levels_names = list(dataset_grp.dimensions.keys())
             levels_names += [name for name in df_combined.index.names
                              if name not in levels_names]
 
-            ds = df_combined.reorder_levels(levels_names).to_xarray()
-            write_xarray_combined(dataset_grp,output_grp,first_var_name, ds)
+            
+            df_index = df_combined.reorder_levels(levels_names).sort_index()
+            ds = df_index.to_xarray()
+            #ds = df_combined.reorder_levels(levels_names).to_xarray()
+            write_xarray_combined(dataset_grp, output_grp, first_var_name, ds)
     return
+
+
+def get_dataset_group(dataset, simulations_desc):
+    dataset_grp = dataset
+    for idx in simulations_desc:
+        dataset_grp = dataset_grp.groups.popitem()[1]
+    return dataset_grp
 
 
 def create_model_mean_tree(output):
@@ -149,6 +157,13 @@ def write_xarray_combined(dataset,output,variable, ds):
         temp = np.ma.fix_invalid(ds[var_name].values, fill_value=fill_value)
         temp = temp[..., 0]
         dimensions = tuple(ds[var_name].coords.keys())[:-1]
+        # Ensure data is oriented the right way:
+        for dim_id, dim in enumerate(dimensions):
+            indices = ncutils.indices.get_indices_from_dim(
+                                    ds[var_name].coords[dim].data,
+                                    output.variables[dim][:])
+            temp = np.take(temp, indices, axis=dim_id)
+
         out_var = output.createVariable(var_name,'f',
                                         dimensions,
                                         fill_value=fill_value)
@@ -157,6 +172,12 @@ def write_xarray_combined(dataset,output,variable, ds):
     for var_name in ['hist', 'bin_edge_right', 'bin_edge_left']:
         temp = np.ma.fix_invalid(ds[var_name].values, fill_value=fill_value)
         dimensions = tuple(ds[var_name].coords.keys())
+        # Ensure data is oriented the right way:
+        for dim_id, dim in enumerate(dimensions):
+            indices = ncutils.indices.get_indices_from_dim(
+                                    ds[var_name].coords[dim].data,
+                                    output.variables[dim][:])
+            temp = np.take(temp, indices, axis=dim_id)
         output.createVariable(var_name, 'f',
                               dimensions,
                               fill_value=fill_value)[:] = temp
@@ -195,8 +216,8 @@ def extract_regression_xarray(dataset, tree, level=None):
         next_tree = tree
 
     if len(tree) > 1:
-        df = pd.concat(extract_regression_xarray(dataset.groups[group], next_tree, level=group)
-                       for group in dataset.groups)
+        df = pd.concat([extract_regression_xarray(dataset.groups[group], next_tree, level=group)
+                        for group in dataset.groups])
     else:
         df = pd.concat([create_xarray_dataset(dataset, var_name)
                         for var_name, dtype in regression._dtype
@@ -208,10 +229,12 @@ def extract_regression_xarray(dataset, tree, level=None):
 
 
 def create_xarray_dataset(dataset, var_name):
-    df = xr.Dataset({var_name: (dataset.variables[var_name].dimensions, dataset.variables[var_name][:])},
-                       coords={dim: (dataset.variables[dim].dimensions, get_dim(dataset.variables[dim], dim))
+    return xr.Dataset({var_name: (dataset.variables[var_name].dimensions,
+                                  dataset.variables[var_name][:])},
+                       coords={dim: (dataset.variables[dim].dimensions,
+                                     get_dim(dataset.variables[dim], dim))
                                for dim in dataset.variables[var_name].dimensions}).to_dataframe()
-    return df
+
 
 def get_dim(var, dim):
     if ('units' in var.ncattrs() and
