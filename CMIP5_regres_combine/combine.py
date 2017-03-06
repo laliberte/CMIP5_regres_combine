@@ -214,10 +214,8 @@ def combine_one_dim(df, sample_size, field, simulations_desc, levels_names):
     df_out['bin_edge_right'] = bin_edges[1:]
     df_out['bin_edge_left'] = bin_edges[:-1]
     # compute p-value:
-    p_value = stats.percentileofscore(df[field], 0.0, kind='weak')/100.0
-    if p_value>0.5: p_value=1.0-p_value
-    # Make two-sided:
-    p_value = 2*p_value
+    p_value = stats.percentileofscore(df[field], 0.0, kind='weak') / 100.0
+    if p_value > 0.5: p_value = 1.0 - p_value
     df_out['p-value'] = p_value
     df_out[field] = df[field].mean()
     for name in ['slope', 'r-value', 'xmean', 'intercept']:
