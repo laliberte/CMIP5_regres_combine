@@ -34,7 +34,6 @@ setup(
         long_description=read('README'),
         install_requires = ['numpy', 'scipy', 
                             #'netcdf4_soft_links',
-                            'reduce_along_axis_n_arrays',
                             'fastparquet',
                             'click', 'dask',
                             'xarray', 'toolz', 'matplotlib'],

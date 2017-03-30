@@ -33,17 +33,23 @@ from reduce_along_axis_n_arrays import reduce_along_axis_n_chunked_arrays
 #External
 from . import regression, combine
 
+DEFAULT_SIMULATIONS_DESC = ['institute', 'model', 'ensemble']
+DEFAULT_MODEL_MEAN_DESC = ['ALL', 'MODEL-MEAN', 'r1i1p1']
+DEFAULT_NUM_PROCS = 1
+DEFAULT_SAMPLE_SIZE = 100
+
+
 @click.group()
 def regres_and_combine():
     return
 
-default_num_procs=1
-@click.option('--num_procs',default=default_num_procs,help='')
+
+@click.option('--num_procs',default=DEFAULT_NUM_PROCS,help='')
 @click.argument('output_file')
 @click.argument('input_file')
 @click.argument('variable')
 @regres_and_combine.command()
-def trend(variable,input_file,output_file,num_procs=default_num_procs):
+def trend(variable,input_file,output_file,num_procs=DEFAULT_NUM_PROCS):
     with netCDF4.Dataset(input_file) as dataset:
         with netCDF4.Dataset(output_file,'w') as output:
             #convert time to years axis:
@@ -79,34 +85,60 @@ def get_years_axis_and_output_single_time(dataset,output):
 def convert_to_datetime(phony_datetime):
     return datetime.datetime(*[getattr(phony_datetime,type) for type in ['year','month','day','hour']])
 
-default_sample_size = 100
-@click.option('--num_procs',default=default_num_procs,help='')
-@click.option('--sample_size',default=default_sample_size,help='')
+def comma_separated(x):
+    try:
+        return x.split(',')
+    except Exception:
+        click.BadParameter('need to be comma-separated string.')
+
+@click.option('--num_procs',default=DEFAULT_NUM_PROCS,help='')
+@click.option('--sample_size',default=DEFAULT_SAMPLE_SIZE,help='')
+@click.option('--simulations_desc', default=DEFAULT_SIMULATIONS_DESC,
+              type=comma_separated,
+              help=('Comma-separated simualtions desc. Default: {0}'
+                    .format(DEFAULT_SIMULATIONS_DESC)))
+@click.option('--model_mean_desc', default=DEFAULT_MODEL_MEAN_DESC,
+              type=str, callback=comma_separated,
+              help=('Comma-separated model mean desc. Default: {0}'
+                    .format(DEFAULT_MODEL_MEAN_DESC)))
 @click.argument('output_file')
 @click.argument('input_file')
 @regres_and_combine.command()
-def combine_trend(input_file, output_file, num_procs=default_num_procs,
-                  sample_size=default_sample_size):
+def combine_trend(input_file, output_file, num_procs=DEFAULT_NUM_PROCS,
+                  sample_size=DEFAULT_SAMPLE_SIZE,
+                  simulations_desc=DEFAULT_SIMULATIONS_DESC,
+                  model_mean_desc=DEFAULT_MODEL_MEAN_DESC):
     field = 'slope'
     simulations_desc = ['institute', 'model', 'ensemble']
-    combine_any(input_file, output_file, field, simulations_desc, num_procs,
-                sample_size)
+    model_mean_desc = ['ALL', 'MODEL-MEAN', 'r1i1p1']
+    combine_any(input_file, output_file, field, simulations_desc,
+                model_mean_desc, num_procs, sample_size)
     return
 
-@click.option('--num_procs',default=default_num_procs,help='')
-@click.option('--sample_size',default=default_sample_size,help='')
+@click.option('--num_procs',default=DEFAULT_NUM_PROCS,help='')
+@click.option('--sample_size',default=DEFAULT_SAMPLE_SIZE,help='')
+@click.option('--simulations_desc', default=DEFAULT_SIMULATIONS_DESC,
+              type=comma_separated,
+              help=('Comma-separated simualtions desc. Default: {0}'
+                    .format(DEFAULT_SIMULATIONS_DESC)))
+@click.option('--model_mean_desc', default=DEFAULT_MODEL_MEAN_DESC,
+              type=str, callback=comma_separated,
+              help=('Comma-separated model mean desc. Default: {0}'
+                    .format(DEFAULT_MODEL_MEAN_DESC)))
 @click.argument('output_file')
 @click.argument('input_file')
 @regres_and_combine.command()
-def combine_pearsoncorr(input_file,output_file,num_procs=default_num_procs, sample_size=default_sample_size):
+def combine_pearsoncorr(input_file,output_file,num_procs=DEFAULT_NUM_PROCS,
+                        sample_size=DEFAULT_SAMPLE_SIZE,
+                        simulations_desc=DEFAULT_SIMULATIONS_DESC,
+                        model_mean_desc=DEFAULT_MODEL_MEAN_DESC):
     field = 'r-value'
-    simulations_desc = ['institute', 'model', 'ensemble']
-    combine_any(input_file, output_file, field, simulations_desc, num_procs,
-                sample_size)
+    combine_any(input_file, output_file, field, simulations_desc,
+                model_mean_desc, num_procs, sample_size)
     return
 
-def combine_any(input_file, output_file, field, simulations_desc, num_procs,
-                sample_size):
+def combine_any(input_file, output_file, field, simulations_desc,
+                model_mean_des, num_procs, sample_size):
     df_combined = combine.combine_from_input(
                     input_file, extract_regression_xarray,
                     field, simulations_desc,
@@ -116,7 +148,7 @@ def combine_any(input_file, output_file, field, simulations_desc, num_procs,
     with netCDF4.Dataset(input_file) as dataset:
         with netCDF4.Dataset(output_file,'w') as output:
             first_var_name=regression._dtype[0][0]
-            output_grp = create_model_mean_tree(output)
+            output_grp = create_model_mean_tree(output, simulations_desc, model_mean_desc)
             dataset_grp = get_dataset_group(dataset, simulations_desc)
             ncutils.replicate.replicate_netcdf_var_dimensions(dataset_grp, output_grp, first_var_name)
             levels_names = list(dataset_grp.dimensions.keys())
@@ -138,14 +170,12 @@ def get_dataset_group(dataset, simulations_desc):
     return dataset_grp
 
 
-def create_model_mean_tree(output):
-    grp_ins = output.createGroup('ALL')
-    grp_ins.setncattr('level_name','institute')
-    grp_mod = grp_ins.createGroup('MODEL-MEAN')
-    grp_mod.setncattr('level_name','model')
-    grp_ens = grp_mod.createGroup('r1i1p1')
-    grp_ens.setncattr('level_name','ensemble')
-    return grp_ens
+def create_model_mean_tree(output, simulations_desc, model_mean_desc):
+    grp = output
+    for sim, mm in zip(simulations_desc, model_mean_desc):
+        grp = grp.createGroup(mm)
+        grp.setncattr('level_name', sim)
+    return grp
 
 def write_xarray_combined(dataset,output,variable, ds):
     fill_value = 1e20
