@@ -85,20 +85,22 @@ def get_years_axis_and_output_single_time(dataset,output):
 def convert_to_datetime(phony_datetime):
     return datetime.datetime(*[getattr(phony_datetime,type) for type in ['year','month','day','hour']])
 
-def comma_separated(x):
+def comma_separated(ctx, param, value):
     try:
-        return x.split(',')
+        return value.split(',')
     except Exception:
         click.BadParameter('need to be comma-separated string.')
 
 @click.option('--num_procs',default=DEFAULT_NUM_PROCS,help='')
 @click.option('--sample_size',default=DEFAULT_SAMPLE_SIZE,help='')
-@click.option('--simulations_desc', default=DEFAULT_SIMULATIONS_DESC,
-              type=comma_separated,
+@click.option('--noise/--no-noise',default=True, help='Determines whether to add a noise model.')
+@click.option('--error/--no-error',default=True, help='Determines whether to use trend computation error.')
+@click.option('--simulations_desc',default=','.join(DEFAULT_SIMULATIONS_DESC),
+              type=str, callback=comma_separated,
               help=('Comma-separated simualtions desc. Default: {0}'
                     .format(DEFAULT_SIMULATIONS_DESC)))
-@click.option('--model_mean_desc', default=DEFAULT_MODEL_MEAN_DESC,
-              type=str, callback=comma_separated,
+@click.option('--model_mean_desc', default=','.join(DEFAULT_MODEL_MEAN_DESC),
+              type=str, callback=comma_separated, 
               help=('Comma-separated model mean desc. Default: {0}'
                     .format(DEFAULT_MODEL_MEAN_DESC)))
 @click.argument('output_file')
@@ -106,22 +108,23 @@ def comma_separated(x):
 @regres_and_combine.command()
 def combine_trend(input_file, output_file, num_procs=DEFAULT_NUM_PROCS,
                   sample_size=DEFAULT_SAMPLE_SIZE,
+                  noise=True, error=True,
                   simulations_desc=DEFAULT_SIMULATIONS_DESC,
                   model_mean_desc=DEFAULT_MODEL_MEAN_DESC):
     field = 'slope'
-    simulations_desc = ['institute', 'model', 'ensemble']
-    model_mean_desc = ['ALL', 'MODEL-MEAN', 'r1i1p1']
     combine_any(input_file, output_file, field, simulations_desc,
-                model_mean_desc, num_procs, sample_size)
+                model_mean_desc, num_procs, sample_size, noise, error)
     return
 
 @click.option('--num_procs',default=DEFAULT_NUM_PROCS,help='')
 @click.option('--sample_size',default=DEFAULT_SAMPLE_SIZE,help='')
-@click.option('--simulations_desc', default=DEFAULT_SIMULATIONS_DESC,
-              type=comma_separated,
+@click.option('--noise/--no-noise',default=True, help='Determines whether to add a noise model.')
+@click.option('--error/--no-error',default=True, help='Determines whether to use trend computation error.')
+@click.option('--simulations_desc',default=','.join(DEFAULT_SIMULATIONS_DESC),
+              type=str, callback=comma_separated,
               help=('Comma-separated simualtions desc. Default: {0}'
                     .format(DEFAULT_SIMULATIONS_DESC)))
-@click.option('--model_mean_desc', default=DEFAULT_MODEL_MEAN_DESC,
+@click.option('--model_mean_desc', default=','.join(DEFAULT_MODEL_MEAN_DESC),
               type=str, callback=comma_separated,
               help=('Comma-separated model mean desc. Default: {0}'
                     .format(DEFAULT_MODEL_MEAN_DESC)))
@@ -130,32 +133,35 @@ def combine_trend(input_file, output_file, num_procs=DEFAULT_NUM_PROCS,
 @regres_and_combine.command()
 def combine_pearsoncorr(input_file,output_file,num_procs=DEFAULT_NUM_PROCS,
                         sample_size=DEFAULT_SAMPLE_SIZE,
+                        noise=True, error=True,
                         simulations_desc=DEFAULT_SIMULATIONS_DESC,
                         model_mean_desc=DEFAULT_MODEL_MEAN_DESC):
     field = 'r-value'
     combine_any(input_file, output_file, field, simulations_desc,
-                model_mean_desc, num_procs, sample_size)
+                model_mean_desc, num_procs, sample_size, noise,
+                error)
     return
 
 def combine_any(input_file, output_file, field, simulations_desc,
-                model_mean_des, num_procs, sample_size):
+                model_mean_desc, num_procs, sample_size, noise,
+                error):
     df_combined = combine.combine_from_input(
                     input_file, extract_regression_xarray,
                     field, simulations_desc,
                     num_procs=num_procs,
-                    sample_size=sample_size)
+                    sample_size=sample_size,
+                    noise=noise, error=error)
 
     with netCDF4.Dataset(input_file) as dataset:
         with netCDF4.Dataset(output_file,'w') as output:
-            first_var_name=regression._dtype[0][0]
+            first_var_name = regression._dtype[0][0]
             output_grp = create_model_mean_tree(output, simulations_desc, model_mean_desc)
             dataset_grp = get_dataset_group(dataset, simulations_desc)
             ncutils.replicate.replicate_netcdf_var_dimensions(dataset_grp, output_grp, first_var_name)
-            levels_names = list(dataset_grp.dimensions.keys())
+            levels_names = list(dataset_grp[first_var_name].dimensions)
             levels_names += [name for name in df_combined.index.names
                              if name not in levels_names]
 
-            
             df_index = df_combined.reorder_levels(levels_names).sort_index()
             ds = df_index.to_xarray()
             #ds = df_combined.reorder_levels(levels_names).to_xarray()

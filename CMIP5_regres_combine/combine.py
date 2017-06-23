@@ -36,7 +36,8 @@ def exec_in_subprocess(func, *args):
 
 
 def combine_from_input(input_file, extractor, field, simulations_desc,
-                       num_procs=1, sample_size=1000):
+                       num_procs=1, sample_size=1000, noise=True,
+                       error=True):
 
     temp_dir = tempfile.mkdtemp(prefix='/dev/shm/')
     try:
@@ -46,7 +47,8 @@ def combine_from_input(input_file, extractor, field, simulations_desc,
                                           num_procs, temp_dir)
         df_dask = dd.read_parquet(temp_dir)
         return combine_sorted(df_dask, field, simulations_desc, levels_names,
-                              num_procs=num_procs, sample_size=sample_size)
+                              num_procs=num_procs, sample_size=sample_size,
+                              noise=noise, error=True)
     finally:
         shutil.rmtree(temp_dir)
 
@@ -69,11 +71,13 @@ def get_dask_chunks(df, simulations_desc, num_procs=1):
 
 
 def combine(df, field, simulations_desc,
-            num_procs=1, sample_size=1000):
+            num_procs=1, sample_size=1000,
+            noise=True, error=True):
     #Set the process pool size (should be less than or equal to number of compute cores):
     levels_names, df = normalize_data(df)
     return combine_sorted(df, field, simulaions_desc, levels_names,
-                          num_procs=1, sample_size=1000)
+                          num_procs=num_procs, sample_size=sample_size, noise=noise,
+                          error=error)
 
 
 def normalize_data(df):
@@ -85,7 +89,8 @@ def normalize_data(df):
                           
 
 def combine_sorted(df, field, simulations_desc, levels_names,
-                   num_procs=1, sample_size=1000):
+                   num_procs=1, sample_size=1000, noise=True,
+                   error=True):
     """
     Takes a lst of regressions obtained from regression_array  corresponding to a list
     of models of the form [(institute,model, ensemble),..] and a list of years axes [[1979,1980,...,2014],...]
@@ -93,6 +98,8 @@ def combine_sorted(df, field, simulations_desc, levels_names,
     :param df: dataframe
     :param num_procs: number of processes to spawn
     :param sample_size: sample size to use
+    :param noise: boolean to determine whether to use a noise model
+    :param error: boolean to determine whether to use trend computation error
     :rtype: array-like
     """
 
@@ -110,7 +117,7 @@ def combine_sorted(df, field, simulations_desc, levels_names,
         df_out =(df_dask
                  .groupby(levels_names)
                  .apply(lambda x: combine_one_dim(x.dropna(), sample_size, field, simulations_desc,
-                                                  levels_names),
+                                                  levels_names, noise, error),
                         meta=meta)
                  .compute(num_workers=num_procs))
 
@@ -127,20 +134,28 @@ def dask_dataframe_though_parquet(temp_dir, df, chunks):
         return
 
 
-def rvs_trends(npoints, loc, scale, size):
+def rvs_trends(npoints, loc, scale, size, error):
     try:
-        return stats.t.rvs(npoints - 2, loc=loc, scale=scale,
-                           size=size)
+        if error:
+            return stats.t.rvs(npoints - 2, loc=loc, scale=scale,
+                               size=size)
+        else:
+            return np.array([loc for id in range(size)])
     except ValueError:
         return np.array([np.nan])
 
 
-def rvs_pearsoncorr(npoints, loc, scale, size):
+def rvs_pearsoncorr(npoints, loc, scale, size, error):
         #Fisher trasform:
     try:
-        return stats.norm.rvs(loc=np.arctanh(loc),
-                              scale=1/np.sqrt(npoints - 3),
-                              size=size)
+        fisher_loc = np.arctanh(loc)
+        fisher_scale = 1/np.sqrt(npoints - 3)
+        if error:
+            return stats.norm.rvs(loc=fisher_loc,
+                                  scale=fisher_scale,
+                                  size=size)
+        else:
+            return np.array([fisher_loc for id in range(size)])
     except RuntimeError:
         return np.array([np.nan])
 
@@ -157,18 +172,23 @@ def natural_meta(df):
     return {key: df[key].dtype for key in df.columns}
 
 
-def combine_one_dim(df, sample_size, field, simulations_desc, levels_names):
+def combine_one_dim(df, sample_size, field, simulations_desc, levels_names, noise,
+                    error):
     """
     Combines trends along one dimension.
     """
     df.drop(levels_names, axis=1, inplace=True)
 
-    subsampling_size = 1000
+    subsampling_size = sample_size / 10
 
-    # Get the noise model:
-    df_noise = compute_noise_model(df, sample_size, field, simulations_desc, subsampling_size=subsampling_size)
-    df_noise.index = range(df_noise.shape[0])
-    noise_variance = df_noise[field].var()
+    if noise:
+        # Get the noise model:
+        df_noise = compute_noise_model(df, sample_size, field, simulations_desc, subsampling_size=subsampling_size)
+        if not df_noise.empty:
+            df_noise.index = range(df_noise.shape[0])
+            noise_variance = df_noise[field].var()
+        else:
+            noise_variance = 0.0
 
     if field == 'slope':
         rvs_func = rvs_trends
@@ -180,15 +200,17 @@ def combine_one_dim(df, sample_size, field, simulations_desc, levels_names):
         stats_model = rvs_func(series['npoints'],
                                series[field],
                                series['stderr'],
-                               subsampling_size)
+                               subsampling_size,
+                               error)
         sub_df = sub_df.sample(len(stats_model), replace=True)
         sub_df[field] = stats_model
         return sub_df.dropna()
 
-    def add_noise_weight_and_subsample(sub_df):
+    def maybe_add_noise_weight_and_subsample(sub_df):
         sub_variance = sub_df[field].var()
-        weight = noise_weight_safe(sub_variance, noise_variance)
-        sub_df.loc[:, field + '_noise_weight'] = weight*np.ones(sub_df.shape[0])
+        if noise and noise_variance > 0.0:
+            weight = noise_weight_safe(sub_variance, noise_variance)
+            sub_df.loc[:, field + '_noise_weight'] = weight*np.ones(sub_df.shape[0])
         # Find rvs from each simulation:
         sub_df = (sub_df
                   .groupby(simulations_desc, group_keys=False)
@@ -200,28 +222,49 @@ def combine_one_dim(df, sample_size, field, simulations_desc, levels_names):
 
     df = (df
           .groupby(simulations_desc[:-1], group_keys=False)
-          .apply(add_noise_weight_and_subsample)
-          .sample(sample_size, replace=True))
+          .apply(maybe_add_noise_weight_and_subsample))
+
+    if df.empty:
+        return create_output(df, field, sample_size, simulations_desc)
+    else:
+        df = df.sample(sample_size, replace=True)
+
     df.index = range(df.shape[0])
 
-    # At this point df and df_noise have the same shape:
-    df[field] += df[field + '_noise_weight'] * df_noise[field]
+    if noise and noise_variance > 0.0:
+        # At this point df and df_noise have the same shape:
+        df[field] += df[field + '_noise_weight'] * df_noise[field]
 
+    return create_output(df, field, sample_size, simulations_desc)
+
+
+def create_output(df, field, sample_size, simulations_desc):
     nbins = int(np.ceil((sample_size)**(1.0/3.0)))
     df_out = pd.DataFrame(index=range(nbins))
-    hist, bin_edges = np.histogram(df[field], bins=nbins)
-    df_out['hist'] = hist
-    df_out['bin_edge_right'] = bin_edges[1:]
-    df_out['bin_edge_left'] = bin_edges[:-1]
-    # compute p-value:
-    p_value = stats.percentileofscore(df[field], 0.0, kind='weak') / 100.0
-    if p_value > 0.5: p_value = 1.0 - p_value
-    df_out['p-value'] = p_value
-    df_out[field] = df[field].mean()
-    for name in ['slope', 'r-value', 'xmean', 'intercept']:
-        df_out[name] = df[name].mean()
-    df_out['nmod'] = df.groupby(simulations_desc).count().shape[0]
-    return df_out
+    if df.empty:
+        df_out['hist'] = np.nan
+        df_out['bin_edge_right'] = [np.nan] * nbins
+        df_out['bin_edge_left'] = [np.nan] * nbins
+        df_out['p-value'] = np.nan
+        df_out[field] = np.nan
+        for name in ['slope', 'r-value', 'xmean', 'intercept']:
+            df_out[name] = np.nan
+        df_out['nmod'] = 0
+        return df_out
+    else:
+        hist, bin_edges = np.histogram(df[field], bins=nbins)
+        df_out['hist'] = hist
+        df_out['bin_edge_right'] = bin_edges[1:]
+        df_out['bin_edge_left'] = bin_edges[:-1]
+        # compute p-value:
+        p_value = stats.percentileofscore(df[field], 0.0, kind='weak') / 100.0
+        if p_value > 0.5: p_value = 1.0 - p_value
+        df_out['p-value'] = p_value
+        df_out[field] = df[field].mean()
+        for name in ['slope', 'r-value', 'xmean', 'intercept']:
+            df_out[name] = df[name].mean()
+        df_out['nmod'] = df.groupby(simulations_desc[:-1]).count().shape[0]
+        return df_out
 
 
 def compute_noise_model(df, sample_size, field, simulations_desc, subsampling_size=1000):
@@ -239,7 +282,11 @@ def compute_noise_model(df, sample_size, field, simulations_desc, subsampling_si
             return sub_df
 
     # Model variance
-    return (df
-            .groupby(simulations_desc[:-1], group_keys=False)
-            .apply(noise_model)
-            .sample(sample_size, replace=True))
+    df_noise = (df
+                .groupby(simulations_desc[:-1], group_keys=False)
+                .apply(noise_model))
+    if df_noise.empty:
+        return df_noise
+    else:
+        return (df_noise
+                .sample(sample_size, replace=True))
